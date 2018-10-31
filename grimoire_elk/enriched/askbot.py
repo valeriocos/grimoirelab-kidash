@@ -30,6 +30,9 @@ from .utils import get_time_diff_days, unixtime_to_datetime
 from .enrich import Enrich, metadata
 from ..elastic_mapping import Mapping as BaseMapping
 
+MAX_SIZE_BULK_ENRICHED_ITEMS = 200
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -308,6 +311,43 @@ class AskbotEnrich(Enrich):
         return (answers_enrich, comments_enrich)
 
     def enrich_items(self, ocean_backend):
+        items_to_enrich = []
+        num_items = 0
+        ins_items = 0
+
+        for item in ocean_backend.fetch():
+            eitem = self.get_rich_item(item)
+            items_to_enrich.append(eitem)
+
+            if 'comments' in item['data'] and 'id' in eitem:
+                comments = item['data']['comments']
+                rich_item_comments = self.get_rich_item_comments(comments, eitem)
+                items_to_enrich.extend(rich_item_comments)
+
+            if 'rsvps' in item['data'] and 'id' in eitem:
+                rsvps = item['data']['rsvps']
+                rich_item_rsvps = self.get_rich_item_rsvps(rsvps, eitem)
+                items_to_enrich.extend(rich_item_rsvps)
+
+            if len(items_to_enrich) < MAX_SIZE_BULK_ENRICHED_ITEMS:
+                continue
+
+            num_items += len(items_to_enrich)
+            ins_items += self.elastic.bulk_upload(items_to_enrich, self.get_field_unique_id())
+            items_to_enrich = []
+
+        if len(items_to_enrich) > 0:
+            num_items += len(items_to_enrich)
+            ins_items += self.elastic.bulk_upload(items_to_enrich, self.get_field_unique_id())
+
+        if num_items != ins_items:
+            missing = num_items - ins_items
+            logger.error("%s/%s missing items for Meetup", str(missing), str(num_items))
+        else:
+            logger.info("%s items inserted for Meetup", str(num_items))
+
+        return num_items
+
         nitems = super(AskbotEnrich, self).enrich_items(ocean_backend)
         logger.info("Total questions enriched: %i", nitems)
 
